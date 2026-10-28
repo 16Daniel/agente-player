@@ -1,0 +1,44 @@
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Compilaciones .NET
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Publicaciones del Agent
+publish/
+**/publish/
+*.pubxml.user
+*.publishsettings
+
+# Archivos temporales y logs
+*.log
+logs/
+*.tmp
+*.temp
+*.cache
+
+# Archivos de configuración local
+.env
+.env.*
+
+
+# Certificados y claves privadas
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Archivos de usuario
+*.rsuser
+*.pidb
+*.svd
