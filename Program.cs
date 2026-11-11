@@ -43,6 +43,10 @@ builder.Services.Configure<PlayerOptions>(builder.Configuration.GetSection("Agen
 // Registrar los servicios utilizados por el agente.
 builder.Services.AddSingleton<HardwareService>(); // Servicio para obtener información del hardware.
 builder.Services.AddSingleton<NetworkService>(); // Servicio para obtener información de red.
+// Servicio para administrar la identidad criptográfica del dispositivo, private-key y public-key del player.
+builder.Services.AddSingleton<DeviceIdentityService>();
+// Servicio para administrar y persistir el token dinámico de autenticación del Player.
+builder.Services.AddSingleton<PlayerTokenService>();
 
 
 // Registrar la infraestructura para crear y administrar clientes HTTP.
@@ -110,4 +114,11 @@ builder.Logging.AddSerilog(Log.Logger, dispose: true);
 // ============================================================================================
 // Construir e iniciar el agente.
 var host = builder.Build();
+
+// Inicializar y validar la identidad criptográfica del dispositivo, se generarán nuevas claves si no existen, si existen se validarán y se reutilizaran.
+// Se ejecuta antes de iniciar los servicios de supervisión y comunicación.
+host.Services
+    .GetRequiredService<DeviceIdentityService>()
+    .EnsureIdentity();
+
 host.Run();

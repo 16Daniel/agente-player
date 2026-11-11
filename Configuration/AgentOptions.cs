@@ -53,11 +53,7 @@ namespace DigitalSignage.Agent.Configuration
         /// Intervalo, en segundos, entre verificaciones de disponibilidad de la API.
         /// </summary>
         public int CheckIntervalSeconds { get; set; } = 60;
-
-        /// <summary>
-        /// Token Bearer utilizado para autenticar al Player ante la API.
-        /// </summary>
-        public string Token { get; set; } = string.Empty;
+                       
     }
 
     /// <summary>

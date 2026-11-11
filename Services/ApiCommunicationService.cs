@@ -1,6 +1,7 @@
 ﻿using DigitalSignage.Agent.Configuration;
 using DigitalSignage.Agent.Models;
 using Microsoft.Extensions.Options;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -16,6 +17,8 @@ namespace DigitalSignage.Agent.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ApiCommunicationService> _logger;
         private readonly ApiOptions _apiOptions;
+        private readonly DeviceIdentityService _deviceIdentityService;
+        private readonly PlayerTokenService _playerTokenService;
 
         /// <summary>
         /// Inicializa el servicio de comunicación con la API.
@@ -32,17 +35,474 @@ namespace DigitalSignage.Agent.Services
         /// <exception cref="ArgumentNullException">
         /// Se produce cuando alguna dependencia requerida es nula.
         /// </exception>
-        public ApiCommunicationService(IHttpClientFactory httpClientFactory, IOptions<AgentOptions> options, ILogger<ApiCommunicationService> logger)
+        public ApiCommunicationService(IHttpClientFactory httpClientFactory, IOptions<AgentOptions> options, ILogger<ApiCommunicationService> logger, DeviceIdentityService deviceIdentityService, PlayerTokenService playerTokenService)
         {
             _httpClientFactory = httpClientFactory
                 ?? throw new ArgumentNullException(nameof(httpClientFactory));
 
             ArgumentNullException.ThrowIfNull(options);
 
+            _deviceIdentityService = deviceIdentityService
+                ?? throw new ArgumentNullException(nameof(deviceIdentityService));
+
+            _playerTokenService = playerTokenService
+                ?? throw new ArgumentNullException(nameof(playerTokenService));
+
             _logger = logger
                 ?? throw new ArgumentNullException(nameof(logger));
 
             _apiOptions = options.Value.Api;
+        }
+
+        /// <summary>
+        /// Envía una solicitud de vinculación del dispositivo a la API.
+        /// No requiere Bearer Token porque el Player aún no está autorizado.
+        /// </summary>
+        /// <param name="numeroSerie">Número de serie de la Raspberry.</param>
+        /// <param name="clavePublica">Clave pública RSA en formato PEM.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Respuesta JSON de la API.</returns>
+        public async Task<string> SolicitarVinculacionAsync(string numeroSerie, string clavePublica, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(numeroSerie);
+            ArgumentException.ThrowIfNullOrWhiteSpace(clavePublica);
+
+            if (string.IsNullOrWhiteSpace(_apiOptions.BaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "La URL base de la API no está configurada.");
+            }
+
+            const string endpoint = "Agent/SolicitarVinculacion";
+
+            using HttpClient httpClient = _httpClientFactory.CreateClient();
+
+            httpClient.BaseAddress = new Uri(
+                _apiOptions.BaseUrl.TrimEnd('/') + "/");
+
+            httpClient.Timeout = TimeSpan.FromSeconds(
+                _apiOptions.TimeoutSeconds);
+
+            var request = new
+            {
+                numero_serie = numeroSerie,
+                clave_publica = clavePublica
+            };
+
+            try
+            {
+                _logger.LogInformation(
+                    "Enviando solicitud de vinculación del dispositivo {NumeroSerie}.",
+                    numeroSerie);
+
+                using HttpResponseMessage response =
+                    await httpClient.PostAsJsonAsync(
+                        endpoint,
+                        request,
+                        cancellationToken);
+
+                string content = await response.Content.ReadAsStringAsync(
+                    cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al solicitar vinculación. " +
+                        $"Respuesta del servidor: {content}");
+                }
+
+                _logger.LogInformation(
+                    "Solicitud de vinculación enviada correctamente. Código HTTP: {StatusCode}.",
+                    (int)response.StatusCode);
+
+                return content;
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"La solicitud de vinculación excedió el tiempo máximo " +
+                    $"de {_apiOptions.TimeoutSeconds} segundos.",
+                    ex);
+            }
+        }
+
+        /// <summary>
+        /// Consulta el estado actual de vinculación del dispositivo.
+        /// No requiere Bearer Token porque el Player aún puede estar pendiente
+        /// de autorización.
+        /// </summary>
+        /// <param name="numeroSerie">Número de serie del dispositivo.</param>
+        /// <param name="clavePublica">Clave pública RSA en formato PEM.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Respuesta JSON de la API.</returns>
+        /// <exception cref="ArgumentException">
+        /// Se produce cuando los datos de identidad son inválidos.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Se produce cuando la URL base no está configurada.
+        /// </exception>
+        /// <exception cref="HttpRequestException">
+        /// Se produce cuando la API devuelve un error HTTP.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Se produce cuando la consulta excede el tiempo configurado.
+        /// </exception>
+        public async Task<string> ConsultarEstadoVinculacionAsync(string numeroSerie, string clavePublica, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(numeroSerie);
+            ArgumentException.ThrowIfNullOrWhiteSpace(clavePublica);
+
+            if (string.IsNullOrWhiteSpace(_apiOptions.BaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "La URL base de la API no está configurada en Agent:Api:BaseUrl.");
+            }
+
+            const string endpoint = "Agent/ConsultarEstadoVinculacion";
+
+            using HttpClient httpClient = _httpClientFactory.CreateClient();
+
+            httpClient.BaseAddress = new Uri(
+                _apiOptions.BaseUrl.TrimEnd('/') + "/");
+
+            httpClient.Timeout = TimeSpan.FromSeconds(
+                _apiOptions.TimeoutSeconds);
+
+            var request = new
+            {
+                numero_serie = numeroSerie,
+                clave_publica = clavePublica
+            };
+
+            try
+            {
+                using HttpResponseMessage response =
+                    await httpClient.PostAsJsonAsync(
+                        endpoint,
+                        request,
+                        cancellationToken);
+
+                string content = await response.Content.ReadAsStringAsync(
+                    cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al consultar el estado de vinculación. " +
+                        $"Respuesta del servidor: {content}");
+                }
+
+                return content;
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"La consulta de vinculación excedió el tiempo máximo " +
+                    $"de {_apiOptions.TimeoutSeconds} segundos.",
+                    ex);
+            }
+        }
+
+        /// <summary>
+        /// Solicita a la API un desafío criptográfico para autenticar
+        /// la identidad RSA del Player previamente autorizado.
+        /// No requiere Bearer Token.
+        /// </summary>
+        /// <param name="numeroSerie">Número de serie de la Raspberry.</param>
+        /// <param name="clavePublica">Clave pública RSA en formato PEM.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Respuesta JSON que contiene el desafío y su identificador.</returns>
+        public async Task<string> SolicitarDesafioAsync(string numeroSerie, string clavePublica, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(numeroSerie);
+            ArgumentException.ThrowIfNullOrWhiteSpace(clavePublica);
+
+            if (string.IsNullOrWhiteSpace(_apiOptions.BaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "La URL base de la API no está configurada en Agent:Api:BaseUrl.");
+            }
+
+            const string endpoint = "Agent/SolicitarDesafio";
+
+            using HttpClient httpClient = _httpClientFactory.CreateClient();
+
+            httpClient.BaseAddress = new Uri(_apiOptions.BaseUrl.TrimEnd('/') + "/");
+
+            // Establece el tiempo de espera para la solicitud HTTP según la configuración.
+            httpClient.Timeout = TimeSpan.FromSeconds(_apiOptions.TimeoutSeconds);
+
+            var request = new
+            {
+                numero_serie = numeroSerie,
+                clave_publica = clavePublica
+            };
+
+            try
+            {
+                _logger.LogInformation("Solicitando desafío RSA para el dispositivo {NumeroSerie}.", numeroSerie);
+
+                // Se envía la solicitud POST al endpoint de la API para obtener el desafío RSA.
+                using HttpResponseMessage response = await httpClient.PostAsJsonAsync(endpoint, request, cancellationToken);
+
+                // Devuelve el JSON con IdDesafio y Desafio, que utilizaremos para generar la firma RSA.
+                string content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al solicitar desafío RSA. " +
+                        $"Respuesta del servidor: {content}");
+                }
+
+                _logger.LogInformation(
+                    "Desafío RSA solicitado correctamente para {NumeroSerie}.",
+                    numeroSerie);
+
+                return content;
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"La solicitud del desafío RSA excedió el tiempo máximo " +
+                    $"de {_apiOptions.TimeoutSeconds} segundos.",
+                    ex);
+            }
+        }
+
+        /// <summary>
+        /// Envía a la API la firma digital del desafío RSA para
+        /// autenticar al Player y obtener un token Bearer.
+        /// No requiere un token de autenticación previo.
+        /// </summary>
+        /// <param name="idDesafio">Identificador del desafío recibido.</param>
+        /// <param name="firma">Firma RSA-PSS/SHA-256 codificada en Base64.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>
+        /// Respuesta JSON con el token Bearer y el identificador del Player.
+        /// </returns>
+        public async Task<string> AutenticarPlayerAsync(string idDesafio, string firma, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(idDesafio);
+            ArgumentException.ThrowIfNullOrWhiteSpace(firma);
+
+            if (string.IsNullOrWhiteSpace(_apiOptions.BaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "La URL base de la API no está configurada en Agent:Api:BaseUrl.");
+            }
+
+            const string endpoint = "Agent/AutenticarPlayer";
+
+            using HttpClient httpClient = _httpClientFactory.CreateClient();
+
+            httpClient.BaseAddress = new Uri(_apiOptions.BaseUrl.TrimEnd('/') + "/");
+
+            // Establece el tiempo de espera para la solicitud HTTP según la configuración.
+            httpClient.Timeout = TimeSpan.FromSeconds(_apiOptions.TimeoutSeconds);
+
+            var request = new
+            {
+                id_desafio = idDesafio,
+                firma = firma
+            };
+
+            try
+            {
+                _logger.LogInformation("Enviando firma RSA para autenticar al Player.");
+
+                using HttpResponseMessage response = await httpClient.PostAsJsonAsync(endpoint, request, cancellationToken);
+
+                string content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al autenticar el Player. " +
+                        $"Respuesta del servidor: {content}");
+                }
+
+                _logger.LogInformation(
+                    "La API respondió a la solicitud de autenticación del Player.");
+
+                // No registrar el contenido: puede incluir el token Bearer.
+                return content;
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"La autenticación del Player excedió el tiempo máximo " +
+                    $"de {_apiOptions.TimeoutSeconds} segundos.",
+                    ex);
+            }
+        }
+
+        /// <summary>
+        /// Realiza la autenticación RSA del Player mediante desafío y firma digital.
+        /// Devuelve el token emitido por la API sin almacenarlo todavía.
+        /// </summary>
+        /// <param name="numeroSerie">Número de serie del dispositivo.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Token Bearer emitido por la API.</returns>
+        public async Task<string> AutenticarConRsaAsync(string numeroSerie, CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(numeroSerie);
+
+            // 1. Obtener la clave pública de la identidad local.
+            string clavePublica = _deviceIdentityService.GetPublicKey();
+
+            // 2. Solicitar un desafío a la API.
+            string jsonDesafio = await SolicitarDesafioAsync(
+                numeroSerie,
+                clavePublica,
+                cancellationToken);
+
+            using JsonDocument documentoDesafio = JsonDocument.Parse(jsonDesafio);
+
+            JsonElement raizDesafio = documentoDesafio.RootElement;
+
+            if (!raizDesafio.TryGetProperty("Status", out JsonElement statusDesafio) ||
+                statusDesafio.GetString() != "OK")
+            {
+                throw new InvalidOperationException("La API no autorizó la solicitud del desafío RSA.");
+            }
+
+            JsonElement datosDesafio = raizDesafio.GetProperty("Data");
+
+            string idDesafio = datosDesafio.GetProperty("IdDesafio").GetString()
+                ?? throw new InvalidOperationException("La API no devolvió IdDesafio.");
+
+            string desafioBase64 = datosDesafio.GetProperty("Desafio").GetString()
+                ?? throw new InvalidOperationException("La API no devolvió Desafio.");
+
+            // 3. Convertir el desafío a bytes y firmarlo con la clave privada.
+            byte[] desafio = Convert.FromBase64String(desafioBase64);
+
+            byte[] firma = _deviceIdentityService.SignChallenge(desafio);
+
+            // 4. Enviar la firma para que la API autentique al dispositivo.
+            string jsonAutenticacion = await AutenticarPlayerAsync(
+                idDesafio,
+                Convert.ToBase64String(firma),
+                cancellationToken);
+
+            using JsonDocument documentoAutenticacion =
+                JsonDocument.Parse(jsonAutenticacion);
+
+            JsonElement raizAutenticacion = documentoAutenticacion.RootElement;
+
+            if (!raizAutenticacion.TryGetProperty("Status", out JsonElement status) ||
+                status.GetString() != "OK")
+            {
+                throw new InvalidOperationException(
+                    "La API rechazó la autenticación RSA del Player.");
+            }
+
+            JsonElement datosAutenticacion = raizAutenticacion.GetProperty("Data");
+
+            string token = datosAutenticacion.GetProperty("Token").GetString()
+                ?? throw new InvalidOperationException(
+                    "La API no devolvió el token de autenticación.");
+
+            if (token.Length != 64 ||
+                !token.All(Uri.IsHexDigit))
+            {
+                throw new InvalidOperationException(
+                    "La API devolvió un token con formato inválido.");
+            }
+
+            _logger.LogInformation(
+                "Autenticación RSA completada correctamente para el dispositivo {NumeroSerie}.",
+                numeroSerie);
+
+            // No registrar el token en logs.
+            return token;
+        }
+
+        /// <summary>
+        /// Comprueba la disponibilidad de la API central mediante
+        /// el endpoint público de salud, sin requerir Bearer Token.
+        /// </summary>
+        /// <param name="cancellationToken">
+        /// Token que permite cancelar la operación.
+        /// </param>
+        /// <returns>
+        /// Tarea que finaliza cuando la API responde correctamente.
+        /// </returns>
+        /// <exception cref="InvalidOperationException">
+        /// Se produce cuando la URL base no está configurada.
+        /// </exception>
+        /// <exception cref="HttpRequestException">
+        /// Se produce cuando la API no responde correctamente.
+        /// </exception>
+        /// <exception cref="TimeoutException">
+        /// Se produce cuando la solicitud supera el tiempo máximo.
+        /// </exception>
+        public async Task ConsultarSaludAsync(CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(_apiOptions.BaseUrl))
+            {
+                throw new InvalidOperationException(
+                    "La URL base de la API no está configurada en Agent:Api:BaseUrl.");
+            }
+
+            using HttpClient httpClient = _httpClientFactory.CreateClient();
+
+            httpClient.BaseAddress = new Uri(
+                _apiOptions.BaseUrl.TrimEnd('/') + "/");
+
+            httpClient.Timeout = TimeSpan.FromSeconds(
+                _apiOptions.TimeoutSeconds);
+
+            try
+            {
+                using HttpResponseMessage response =
+                    await httpClient.GetAsync(
+                        "Agent/Health",
+                        cancellationToken);
+
+                string content = await response.Content.ReadAsStringAsync(
+                    cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al consultar Agent/Health. " +
+                        $"Respuesta del servidor: {content}");
+                }
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new TimeoutException(
+                    $"La consulta de salud de la API excedió el tiempo máximo " +
+                    $"de {_apiOptions.TimeoutSeconds} segundos.",
+                    ex);
+            }
         }
 
         /// <summary>
@@ -82,19 +542,18 @@ namespace DigitalSignage.Agent.Services
 
             using HttpClient httpClient = _httpClientFactory.CreateClient();
 
-            httpClient.BaseAddress = new Uri(
-                _apiOptions.BaseUrl.TrimEnd('/') + "/");
+            httpClient.BaseAddress = new Uri(_apiOptions.BaseUrl.TrimEnd('/') + "/");
 
             httpClient.Timeout = TimeSpan.FromSeconds(_apiOptions.TimeoutSeconds);
 
-            if (string.IsNullOrWhiteSpace(_apiOptions.Token))
+            string? token = await _playerTokenService.ObtenerTokenAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(token))
             {
-                throw new InvalidOperationException(
-                    "El token de autenticación no está configurado en Agent:Api:Token.");
+                throw new InvalidOperationException("El Player no tiene un token dinámico almacenado. " + "Se requiere autenticación RSA.");
             }
 
-            httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", _apiOptions.Token);
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             try
             {
                 _logger.LogDebug(
@@ -102,14 +561,32 @@ namespace DigitalSignage.Agent.Services
                     endpoint);
 
                 using HttpResponseMessage response = await httpClient.GetAsync(
-                    endpoint,
+                    endpoint.TrimStart('/'),
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken);
+                               
+                string content = await response.Content.ReadAsStringAsync(cancellationToken);
 
-                response.EnsureSuccessStatusCode();
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (response.StatusCode == HttpStatusCode.Unauthorized)
+                    {
+                        bool eliminado = await _playerTokenService.EliminarTokenSiCoincideAsync(token, cancellationToken);
 
-                string content = await response.Content.ReadAsStringAsync(
-                    cancellationToken);
+                        if (eliminado)
+                        {
+                            _logger.LogWarning(
+                                "La API rechazó el token dinámico del Player. " +
+                                "Se solicitará una nueva autenticación RSA.");
+                        }
+                    }
+
+                    throw new HttpRequestException(
+                        $"Error HTTP {(int)response.StatusCode} al consultar '{endpoint}'. " +
+                        $"Respuesta del servidor: {content}",
+                        inner: null,
+                        statusCode: response.StatusCode);
+                }
 
                 _logger.LogDebug(
                     "Solicitud HTTP GET completada. Endpoint: {Endpoint}. Código HTTP: {StatusCode}.",
@@ -137,7 +614,6 @@ namespace DigitalSignage.Agent.Services
                     ex);
             }
         }
-
 
         /// <summary>
         /// Envía información en formato JSON a un endpoint de la API.
@@ -175,15 +651,14 @@ namespace DigitalSignage.Agent.Services
             httpClient.Timeout = TimeSpan.FromSeconds(
                 _apiOptions.TimeoutSeconds);
 
-            if (string.IsNullOrWhiteSpace(_apiOptions.Token))
+            string? token = await _playerTokenService.ObtenerTokenAsync(cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(token))
             {
-                throw new InvalidOperationException(
-                    "El token de autenticación no está configurado en Agent:Api:Token.");
+                throw new InvalidOperationException("El Player no tiene un token dinámico almacenado. " + "Se requiere autenticación RSA.");
             }
 
-            httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", _apiOptions.Token);
-
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             try
             {
                 _logger.LogDebug(
@@ -198,11 +673,27 @@ namespace DigitalSignage.Agent.Services
                 string content = await response.Content.ReadAsStringAsync(
                     cancellationToken);
 
+
                 if (!response.IsSuccessStatusCode)
                 {
+                    if (response.StatusCode == HttpStatusCode.Unauthorized)
+                    {
+                        bool eliminado = await _playerTokenService
+                            .EliminarTokenSiCoincideAsync(token, cancellationToken);
+
+                        if (eliminado)
+                        {
+                            _logger.LogWarning(
+                                "La API rechazó el token dinámico del Player. " +
+                                "Se solicitará una nueva autenticación RSA.");
+                        }
+                    }
+
                     throw new HttpRequestException(
                         $"Error HTTP {(int)response.StatusCode} al consultar '{endpoint}'. " +
-                        $"Respuesta del servidor: {content}");
+                        $"Respuesta del servidor: {content}",
+                        inner: null,
+                        statusCode: response.StatusCode);
                 }
 
                 _logger.LogDebug(
@@ -225,7 +716,6 @@ namespace DigitalSignage.Agent.Services
                     ex);
             }
         }
-
 
         /// <summary>
         /// Consulta los comandos pendientes asignados al Player autenticado.
@@ -399,18 +889,6 @@ namespace DigitalSignage.Agent.Services
                 codigoResultado,
                 result.Message);
         }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

@@ -14,6 +14,8 @@ namespace DigitalSignage.Agent
         ILogger<Worker> logger,
         HardwareService hardwareService,
         NetworkService networkService,
+        DeviceIdentityService deviceIdentityService,
+        ApiCommunicationService apiCommunicationService,
         IOptions<AgentOptions> agentOptions,
         IOptions<PlayerOptions> playerOptions) : BackgroundService
     {
@@ -40,6 +42,8 @@ namespace DigitalSignage.Agent
                 // Identifica y registra las direcciones IPv4 disponibles
                 // en las interfaces de red activas del dispositivo.
                 LogNetworkInformation();
+
+                
 
                 // Inicia la supervisión periódica de la red para detectar
                 // cambios de dirección IPv4, pérdidas y recuperaciones de ruta.
@@ -97,6 +101,42 @@ namespace DigitalSignage.Agent
             logger.LogInformation(
                 "Espacio disponible para contenido: {AvailableBytes} bytes.",
                 availableStorage);
+        }
+
+        /// <summary>
+        /// Envía a la API central la solicitud inicial de vinculación
+        /// utilizando la identidad criptográfica del dispositivo.
+        /// </summary>
+        /// <param name="stoppingToken">
+        /// Token de cancelación asociado al servicio.
+        /// </param>
+        /// <returns>Tarea que representa la solicitud de vinculación.</returns>
+        private async Task SolicitarVinculacionAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                string numeroSerie = hardwareService.GetSerialNumber();
+                string clavePublica = deviceIdentityService.GetPublicKey();
+
+                string respuesta = await apiCommunicationService.SolicitarVinculacionAsync(
+                    numeroSerie,
+                    clavePublica,
+                    stoppingToken);
+
+                logger.LogInformation(
+                    "Respuesta de solicitud de vinculación: {Respuesta}",
+                    respuesta);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(
+                    ex,
+                    "No fue posible enviar la solicitud de vinculación del Player.");
+            }
         }
 
         // ============================================================================================
