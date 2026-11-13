@@ -52,7 +52,7 @@ namespace DigitalSignage.Agent.Configuration
         /// <summary>
         /// Intervalo, en segundos, entre verificaciones de disponibilidad de la API.
         /// </summary>
-        public int CheckIntervalSeconds { get; set; } = 60;
+        public int CheckIntervalSeconds { get; set; } = 30;
                        
     }
 

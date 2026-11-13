@@ -47,6 +47,12 @@ builder.Services.AddSingleton<NetworkService>(); // Servicio para obtener inform
 builder.Services.AddSingleton<DeviceIdentityService>();
 // Servicio para administrar y persistir el token dinámico de autenticación del Player.
 builder.Services.AddSingleton<PlayerTokenService>();
+// Servicio para renovar el token dinámico de autenticación del Player.
+builder.Services.AddSingleton<PlayerTokenRenewalService>();
+// Servicio para guardar y recupera el progreso de renovación de token para continuar después de un fallo o reinicio.
+builder.Services.AddSingleton<PlayerTokenRenewalStateService>();
+// Estado administrativo compartido entre los servicios del Player.
+builder.Services.AddSingleton<PlayerAdministrativeState>();
 
 
 // Registrar la infraestructura para crear y administrar clientes HTTP.

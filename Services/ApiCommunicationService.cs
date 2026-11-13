@@ -832,6 +832,85 @@ namespace DigitalSignage.Agent.Services
                 response.Message);
         }
 
+
+        /// <summary>
+        /// Consulta el estado actual de un comando asignado al Player
+        /// autenticado, incluyendo comandos finalizados o expirados.
+        /// </summary>
+        /// <param name="idComandoPlayer">
+        /// Identificador del comando que se desea consultar.
+        /// </param>
+        /// <param name="cancellationToken">
+        /// Token que permite cancelar la solicitud.
+        /// </param>
+        /// <returns>
+        /// Estado del comando correspondiente al Player autenticado.
+        /// </returns>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Se produce cuando el identificador del comando no es válido.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Se produce cuando la API devuelve una respuesta inválida.
+        /// </exception>
+        public async Task<PlayerComandoEstado> ConsultarEstadoComandoPlayerAsync(int idComandoPlayer, CancellationToken cancellationToken = default)
+        {
+            if (idComandoPlayer <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(idComandoPlayer),
+                    "El identificador del comando debe ser mayor que cero.");
+            }
+
+            string endpoint =
+                $"Agent/ConsultarEstadoComandoPlayer?id_comando_player={idComandoPlayer}";
+
+            // Reutilizar la comunicación HTTP autenticada existente.
+            string json = await GetAsync(endpoint, cancellationToken);
+
+            ApiResponse<PlayerComandoEstado>? response =
+                JsonSerializer.Deserialize<ApiResponse<PlayerComandoEstado>>(json);
+
+            if (response == null)
+            {
+                throw new InvalidOperationException(
+                    $"La API devolvió una respuesta nula al consultar el comando {idComandoPlayer}.");
+            }
+
+            if (!string.Equals(
+                response.Status,
+                "OK",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"No fue posible consultar el estado del comando {idComandoPlayer}. " +
+                    $"Respuesta de la API: {response.Message}");
+            }
+
+            if (response.Data == null)
+            {
+                throw new InvalidOperationException(
+                    $"La API no devolvió información del comando {idComandoPlayer}.");
+            }
+
+            if (response.Data.id_comando_player != idComandoPlayer)
+            {
+                throw new InvalidOperationException(
+                    $"La API devolvió un identificador diferente al solicitado. " +
+                    $"Solicitado: {idComandoPlayer}. " +
+                    $"Recibido: {response.Data.id_comando_player}.");
+            }
+
+            _logger.LogDebug(
+                "Estado del comando {IdComando} consultado correctamente. " +
+                "Estatus: {Estatus}. Expirado: {Expirado}.",
+                idComandoPlayer,
+                response.Data.codigo_estatus_comando,
+                response.Data.expirado);
+
+            return response.Data;
+        }
+
+
         /// <summary>
         /// Registra en la API central el resultado final de un comando del Player, una vez que se ejecuta el comando registra si fue exitoso o no.
         /// </summary>

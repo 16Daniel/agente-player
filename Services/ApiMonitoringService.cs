@@ -15,7 +15,8 @@ namespace DigitalSignage.Agent.Services
         PlayerInformationService playerInformationService,
         HardwareService hardwareService,
         DeviceIdentityService deviceIdentityService,
-        PlayerTokenService playerTokenService) : BackgroundService
+        PlayerTokenService playerTokenService,
+        PlayerAdministrativeState playerAdministrativeState) : BackgroundService
     {
         private bool? _ultimaDisponibilidad;
         private int? _ultimoEstadoVinculacion;
@@ -190,11 +191,15 @@ namespace DigitalSignage.Agent.Services
                 int codigo = data.GetProperty("Codigo").GetInt32();
                 string? estado = data.GetProperty("Estado").GetString();
 
-                if (codigo < 0 || codigo > 3)
+                if (codigo < 0 || codigo > 4)
                 {
                     throw new InvalidOperationException(
                         $"La API devolvió un código de vinculación desconocido: {codigo}.");
                 }
+
+                // Permitir operaciones únicamente cuando la API confirma
+                // que la identidad del Player está autorizada y activa.
+                playerAdministrativeState.EstablecerEstado(codigo == 2);
 
                 if (_ultimoEstadoVinculacion == codigo)
                 {
@@ -218,6 +223,10 @@ namespace DigitalSignage.Agent.Services
                         break;
                     case 3:
                         logger.LogWarning("Solicitud de vinculación rechazada.");
+                        break;
+                    case 4:
+                        logger.LogWarning("Player administrativamente inactivo o suspendido. " +
+                            "Las operaciones permanecerán bloqueadas hasta su reactivación.");
                         break;
                 }
 

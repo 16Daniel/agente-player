@@ -13,6 +13,8 @@ namespace DigitalSignage.Agent.Models
 
         public string codigo_tipo_comando { get; set; } = string.Empty;
 
+        public string codigo_estatus_comando { get; set; } = string.Empty;
+
         public string fecha_solicitud_utc { get; set; } = string.Empty;
 
         public string fecha_expiracion_utc { get; set; } = string.Empty;
