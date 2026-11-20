@@ -17,10 +17,14 @@ namespace DigitalSignage.Agent.Services
         PlayerTokenRenewalService playerTokenRenewalService,
         PlayerTokenRenewalStateService renewalStateService,
         HardwareService hardwareService,
+        AudioConfigurationService audioConfigurationService,
+        MpvPlayerService mpvPlayerService,
         IOptions<AgentOptions> agentOptions,
         ILogger<PlayerCommandService> logger,
         PlayerAdministrativeState playerAdministrativeState) : BackgroundService
     {
+        private bool _comunicacionComandosInterrumpida = false;
+
         /// <summary>
         /// Consulta los comandos a intervalos configurados hasta que se detenga el Agent.
         /// </summary>
@@ -64,21 +68,29 @@ namespace DigitalSignage.Agent.Services
                                 List<PlayerComandoPendiente> comandos =
                                     await apiCommunicationService.ObtenerComandosPendientesAsync(stoppingToken);
 
+                                // Registrar la recuperación únicamente después de una consulta exitosa.
+                                if (_comunicacionComandosInterrumpida)
+                                {
+                                    logger.LogInformation(
+                                        "Comunicación con la API recuperada. " +
+                                        "Consulta de comandos del Player restablecida.");
+
+                                    _comunicacionComandosInterrumpida = false;
+                                }
+
                                 foreach (PlayerComandoPendiente comando in comandos)
                                 {
-                                    if (string.Equals(
-                                        comando.codigo_tipo_comando,
-                                        "RENOVAR_TOKEN",
-                                        StringComparison.OrdinalIgnoreCase))
+                                    if (string.Equals(comando.codigo_tipo_comando, "RENOVAR_TOKEN", StringComparison.OrdinalIgnoreCase))
                                     {
                                         await ProcesarRenovacionTokenAsync(comando, stoppingToken);
                                     }
-                                    else if (string.Equals(
-                                        comando.codigo_tipo_comando,
-                                        "REPORTAR_INFO",
-                                        StringComparison.OrdinalIgnoreCase))
+                                    else if (string.Equals(comando.codigo_tipo_comando, "REPORTAR_INFO", StringComparison.OrdinalIgnoreCase))
                                     {
                                         await ProcesarReporteInformacionAsync(comando, stoppingToken);
+                                    }
+                                    else if (string.Equals(comando.codigo_tipo_comando, "APLICAR_CONFIGURACION", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        await ProcesarAplicarConfiguracionAsync(comando, stoppingToken);
                                     }
                                     else
                                     {
@@ -90,12 +102,40 @@ namespace DigitalSignage.Agent.Services
                                 }
                             }
                         }
-                    }catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested){
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
                         break;
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        if (!_comunicacionComandosInterrumpida)
+                        {
+                            logger.LogWarning(
+                                "Comunicación con la API interrumpida al consultar comandos. " +
+                                "Detalle: {Mensaje}",
+                                ex.Message);
+                        }
+
+                        _comunicacionComandosInterrumpida = true;
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        if (!_comunicacionComandosInterrumpida)
+                        {
+                            logger.LogWarning(
+                                "Tiempo de espera agotado al consultar los comandos del Player. " +
+                                "Detalle: {Mensaje}",
+                                ex.Message);
+                        }
+
+                        _comunicacionComandosInterrumpida = true;
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Error al consultar los comandos pendientes del Player.");
+                        logger.LogError(
+                            ex,
+                            "Error inesperado al consultar o procesar los comandos del Player.");
                     }
                 }
                 while (await timer.WaitForNextTickAsync(stoppingToken));
@@ -343,6 +383,186 @@ namespace DigitalSignage.Agent.Services
                     comando.id_comando_player,
                     comandoIniciado,
                     reporteExitoso);
+            }
+        }
+
+
+        /// <summary>
+        /// Procesa el comando APLICAR_CONFIGURACION, configura la salida
+        /// de audio de MPV, confirma la versión aplicada ante la API
+        /// y finaliza el comando con el resultado correspondiente.
+        /// </summary>
+        /// <param name="comando">Comando asignado al Player.</param>
+        /// <param name="cancellationToken">Token de cancelación del servicio.</param>
+        /// <returns>Tarea que representa el procesamiento.</returns>
+        private async Task ProcesarAplicarConfiguracionAsync(PlayerComandoPendiente comando, CancellationToken cancellationToken)
+        {
+            if (string.Equals(
+                comando.codigo_estatus_comando,
+                "En_proceso",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogWarning(
+                    "El comando APLICAR_CONFIGURACION {IdComando} ya está En_proceso.",
+                    comando.id_comando_player);
+
+                return;
+            }
+
+            bool comandoIniciado = false;
+
+            try
+            {
+                logger.LogInformation(
+                    "Procesando APLICAR_CONFIGURACION. Id: {IdComando}.",
+                    comando.id_comando_player);
+
+                // Registrar el inicio del comando en la API.
+                await apiCommunicationService.IniciarComandoPlayerAsync(
+                    comando.id_comando_player,
+                    cancellationToken);
+
+                comandoIniciado = true;
+
+                // Consultar la configuración vigente.
+                PlayerConfiguracion configuracion =
+                    await apiCommunicationService.ConsultarConfiguracionPlayerAsync(
+                        cancellationToken);
+
+                if (!configuracion.id_audio.HasValue ||
+                    !configuracion.version_configuracion.HasValue)
+                {
+                    throw new InvalidOperationException(
+                        "El Player no tiene una configuración de audio válida.");
+                }
+
+                int idAudio = configuracion.id_audio.Value;
+                int version = configuracion.version_configuracion.Value;
+
+                string salidaAudio = idAudio switch
+                {
+                    1 => "HDMI",
+                    2 => "Jack 3.5 mm",
+                    _ => throw new InvalidOperationException(
+                        $"Salida de audio no reconocida: {idAudio}.")
+                };
+
+                logger.LogInformation(
+                    "Configuración de audio solicitada: {Salida}. Versión: {Version}.",
+                    salidaAudio,
+                    version);
+
+                // Detectar la salida sin modificar la configuración local.
+                string dispositivo = await audioConfigurationService.ObtenerDispositivoAsync(
+                    idAudio,
+                    cancellationToken);
+
+                try
+                {
+                    await mpvPlayerService.CambiarAudioAsync(
+                        dispositivo,
+                        cancellationToken);
+                }
+                catch (Exception ex) when (
+                    ex is not OperationCanceledException ||
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        ex,
+                        "No fue posible cambiar el audio mediante IPC. Se intentará reiniciar MPV.");
+
+                    await mpvPlayerService.IniciarAsync(
+                        "/var/lib/digital-signage/media/video-prueba1.mp4",
+                        dispositivo,
+                        cancellationToken);
+                }
+
+                // Guardar la configuración después del cambio.
+                await audioConfigurationService.GuardarConfiguracionAsync(
+                    idAudio,
+                    version,
+                    dispositivo,
+                    cancellationToken);
+
+                logger.LogInformation(
+                    "Salida de audio aplicada: {Salida}. Dispositivo: {Dispositivo}.",
+                    salidaAudio,
+                    dispositivo);
+
+                // Confirmar la versión de configuración ante la API.
+                await apiCommunicationService.ConfirmarConfiguracionPlayerAsync(
+                    version,
+                    cancellationToken);
+
+                logger.LogInformation(
+                    "Versión de configuración confirmada: {Version}.",
+                    version);
+
+                await apiCommunicationService.FinalizarComandoPlayerAsync(
+                     comando.id_comando_player,
+                     "Completado",
+                     $"Configuración de audio {salidaAudio}, versión {version}, aplicada correctamente.",
+                     cancellationToken);
+                logger.LogInformation(
+                    "Comando APLICAR_CONFIGURACION completado. Id: {IdComando}.",
+                    comando.id_comando_player);
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(
+                    ex,
+                    "Error al procesar APLICAR_CONFIGURACION. Comando: {IdComando}.",
+                    comando.id_comando_player);
+
+                if (comandoIniciado)
+                {
+                    try
+                    {
+                        await apiCommunicationService.FinalizarComandoPlayerAsync(
+                            comando.id_comando_player,
+                            "Error",
+                            $"Error al aplicar la configuración: {ex.Message}",
+                            cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception errorFinalizacion)
+                    {
+                        logger.LogError(
+                            errorFinalizacion,
+                            "No fue posible reportar el error del comando {IdComando} a la API.",
+                            comando.id_comando_player);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Detiene la reproducción MPV cuando finaliza el servicio
+        /// de comandos del Player.
+        /// </summary>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Tarea que representa la detención del servicio.</returns>
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await base.StopAsync(cancellationToken);
+            }
+            finally
+            {
+                await mpvPlayerService.DetenerAsync(CancellationToken.None);
+
+                logger.LogInformation(
+                    "Reproductor MPV detenido durante el cierre del Agent.");
             }
         }
     }

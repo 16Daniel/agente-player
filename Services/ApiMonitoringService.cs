@@ -103,8 +103,10 @@ namespace DigitalSignage.Agent.Services
             {
                 if (_ultimaDisponibilidad != false)
                 {
-                    logger.LogWarning(ex,
-                        "API central no disponible. El agente continuará funcionando.");
+                    logger.LogWarning(
+                        "API central no disponible. Detalle: {Mensaje}. " +
+                        "El agente continuará funcionando.",
+                        ex.Message);
                 }
 
                 _ultimaDisponibilidad = false;

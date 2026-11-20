@@ -17,7 +17,9 @@ namespace DigitalSignage.Agent
         DeviceIdentityService deviceIdentityService,
         ApiCommunicationService apiCommunicationService,
         IOptions<AgentOptions> agentOptions,
-        IOptions<PlayerOptions> playerOptions) : BackgroundService
+        IOptions<PlayerOptions> playerOptions,
+        AudioConfigurationService audioConfigurationService,
+        MpvPlayerService mpvPlayerService) : BackgroundService
     {
         /// <summary>
         /// Ejecuta el ciclo principal del agente hasta que
@@ -43,7 +45,63 @@ namespace DigitalSignage.Agent
                 // en las interfaces de red activas del dispositivo.
                 LogNetworkInformation();
 
-                
+                // Recuperar la configuración de audio almacenada localmente.
+                string? dispositivoAudio =
+                    await audioConfigurationService.ObtenerDispositivoConfiguradoAsync(stoppingToken);
+
+                if (!string.IsNullOrWhiteSpace(dispositivoAudio))
+                {
+                    logger.LogInformation(
+                        "Salida de audio disponible para reproducción: {Dispositivo}.",
+                        dispositivoAudio);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "No existe una salida de audio configurada localmente.");
+                }
+
+
+                // Iniciar la reproducción local al arrancar el Agent.
+                // La playlist vigente proporcionará el archivo en una etapa posterior.
+                const string archivoInicial =
+                    "/var/lib/digital-signage/media/video-prueba1.mp4";
+
+                if (!string.IsNullOrWhiteSpace(dispositivoAudio))
+                {
+                    if (File.Exists(archivoInicial))
+                    {
+                        try
+                        {
+                            await mpvPlayerService.IniciarAsync(
+                                archivoInicial,
+                                dispositivoAudio,
+                                stoppingToken);
+
+                            logger.LogInformation(
+                                "Reproducción local iniciada. Archivo: {Archivo}.",
+                                archivoInicial);
+                        }
+                        catch (OperationCanceledException)
+                            when (stoppingToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(
+                                ex,
+                                "No fue posible iniciar la reproducción local.");
+                        }
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "No existe el archivo multimedia local: {Archivo}.",
+                            archivoInicial);
+                    }
+                }
+
 
                 // Inicia la supervisión periódica de la red para detectar
                 // cambios de dirección IPv4, pérdidas y recuperaciones de ruta.
@@ -168,6 +226,7 @@ namespace DigitalSignage.Agent
                     address);
             }
         }
+                 
 
         // ============================================================================================
         // SUPERVISIÓN DE RED
@@ -247,13 +306,14 @@ namespace DigitalSignage.Agent
                 }
                 catch (SocketException ex)
                 {
-                    // Registrar una pérdida de ruta solamente una vez,
-                    // evitando generar advertencias repetidas en cada ciclo.
+                    // Registrar la pérdida de ruta únicamente una vez.
                     if (!routeLost)
                     {
                         logger.LogWarning(
-                            ex,
-                            "Ruta IPv4 no disponible. El agente continuará supervisando la red.");
+                            "Ruta IPv4 no disponible. Código: {SocketErrorCode}. " +
+                            "Detalle: {Mensaje}. El agente continuará supervisando la red.",
+                            ex.SocketErrorCode,
+                            ex.Message);
 
                         routeLost = true;
                         lastKnownAddress = null;

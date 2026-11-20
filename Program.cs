@@ -53,6 +53,10 @@ builder.Services.AddSingleton<PlayerTokenRenewalService>();
 builder.Services.AddSingleton<PlayerTokenRenewalStateService>();
 // Estado administrativo compartido entre los servicios del Player.
 builder.Services.AddSingleton<PlayerAdministrativeState>();
+// Servicio para administrar la configuración de audio del Player.
+builder.Services.AddSingleton<AudioConfigurationService>();
+// Servicio para administrar la reproducción de medios mediante MPV.
+builder.Services.AddSingleton<MpvPlayerService>();
 
 
 // Registrar la infraestructura para crear y administrar clientes HTTP.

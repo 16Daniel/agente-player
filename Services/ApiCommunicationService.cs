@@ -970,6 +970,80 @@ namespace DigitalSignage.Agent.Services
         }
 
 
+        /// <summary>
+        /// Consulta la configuración vigente del Player autenticado.
+        /// </summary>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Respuesta JSON con la configuración del Player.</returns>
+        public async Task<string> ObtenerConfiguracionPlayerAsync(CancellationToken cancellationToken = default) {
+            return await GetAsync("Agent/ObtenerConfiguracionPlayer", cancellationToken);
+        }
 
+        /// <summary>
+        /// Consulta y deserializa la configuración del Player autenticado.
+        /// </summary>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Configuración registrada para el Player.</returns>
+        public async Task<PlayerConfiguracion> ConsultarConfiguracionPlayerAsync(CancellationToken cancellationToken = default)
+        {
+            string json = await ObtenerConfiguracionPlayerAsync(cancellationToken);
+
+            ApiResponse<PlayerConfiguracion>? response =
+                JsonSerializer.Deserialize<ApiResponse<PlayerConfiguracion>>(json);
+
+            if (response == null ||
+                !string.Equals(response.Status, "OK", StringComparison.OrdinalIgnoreCase) ||
+                response.Data == null)
+            {
+                throw new InvalidOperationException(
+                    $"No fue posible consultar la configuración del Player. " +
+                    $"Respuesta: {response?.Message ?? json}");
+            }
+
+            return response.Data;
+        }
+
+        /// <summary>
+        /// Confirma ante la API la versión de configuración aplicada
+        /// correctamente por el Player.
+        /// </summary>
+        /// <param name="versionAplicada">Versión aplicada por el dispositivo.</param>
+        /// <param name="cancellationToken">Token de cancelación.</param>
+        /// <returns>Tarea que representa la confirmación.</returns>
+        /// <exception cref="InvalidOperationException">
+        /// Se produce cuando la API rechaza la confirmación.
+        /// </exception>
+        public async Task ConfirmarConfiguracionPlayerAsync(int versionAplicada, CancellationToken cancellationToken = default)
+        {
+            if (versionAplicada <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(versionAplicada),
+                    "La versión aplicada debe ser mayor que cero.");
+            }
+
+            var request = new
+            {
+                version_aplicada = versionAplicada
+            };
+
+            string json = await PostAsync(
+                "Agent/ConfirmarConfiguracionPlayer",
+                request,
+                cancellationToken);
+
+            ApiResponse<object>? response =
+                JsonSerializer.Deserialize<ApiResponse<object>>(json);
+
+            if (response == null ||
+                !string.Equals(response.Status, "OK", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"No fue posible confirmar la versión {versionAplicada}. " +
+                    $"Respuesta de la API: {response?.Message ?? json}");
+            }
+
+            _logger.LogInformation("Versión de configuración {Version} confirmada correctamente.", versionAplicada);
+        }
     }
 }
