@@ -18,6 +18,7 @@ namespace DigitalSignage.Agent.Services
         private Task? _errorReaderTask;
         private CancellationTokenSource? _monitorCancellation;
         private Task? _monitorTask;
+        private Task? _hdmiMonitorTask;
         private string? _currentFile;
         private string? _currentAudioDevice;
         private bool _disposed;
@@ -76,6 +77,7 @@ namespace DigitalSignage.Agent.Services
 
                     _monitorCancellation = new CancellationTokenSource();
                     _monitorTask = SupervisarAsync(_monitorCancellation.Token);
+                    _hdmiMonitorTask = SupervisarHdmiAsync(_monitorCancellation.Token);
                 }
                 finally
                 {
@@ -222,6 +224,182 @@ namespace DigitalSignage.Agent.Services
             }
         }
 
+        /// <summary>
+        /// Detecta la reconexión física HDMI y recupera exclusivamente la pista de audio
+        /// cuando MPV la ha deseleccionado. No modifica la reproducción ni la configuración persistida.
+        /// </summary>
+        private async Task SupervisarHdmiAsync(CancellationToken cancellationToken)
+        {
+            bool? conectadoAnterior = null;
+
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    bool? conectado = LeerConexionHdmi();
+
+                    if (conectado == true && conectadoAnterior == false)
+                    {
+                        // El conector volvió a estar disponible. ALSA puede tardar en inicializar.
+                        for (int intento = 1; intento <= 5; intento++)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+
+                            if (await RecuperarAudioHdmiAsync(cancellationToken))
+                                break;
+
+                            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                        }
+                    }
+
+                    conectadoAnterior = conectado;
+                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error al supervisar la reconexión HDMI.");
+                    if (cancellationToken.IsCancellationRequested)
+                        return;
+
+                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Lee el estado de los conectores DRM HDMI. Devuelve null si el sistema no expone
+        /// ningún conector, para evitar interpretar una lectura fallida como desconexión.
+        /// </summary>
+        private static bool? LeerConexionHdmi()
+        {
+            if (!Directory.Exists("/sys/class/drm"))
+                return null;
+
+            string[] conectores = Directory.GetDirectories("/sys/class/drm", "*HDMI*");
+            bool encontrado = false;
+
+            foreach (string conector in conectores)
+            {
+                string ruta = Path.Combine(conector, "status");
+                if (!File.Exists(ruta))
+                    continue;
+
+                encontrado = true;
+                if (string.Equals(File.ReadAllText(ruta).Trim(), "connected", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return encontrado ? false : null;
+        }
+
+        /// <summary>
+        /// Reactiva la pista de audio por IPC únicamente si HDMI sigue seleccionado
+        /// y MPV informa que la pista de audio está deshabilitada.
+        /// </summary>
+        /// <returns>True si no se requiere más recuperación; false si debe reintentarse.</returns>
+        private async Task<bool> RecuperarAudioHdmiAsync(CancellationToken cancellationToken)
+        {
+            await _processLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_process == null || _process.HasExited ||
+                    _currentAudioDevice == null ||
+                    !_currentAudioDevice.Contains("hdmi", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                const string ruta = "/run/digital-signage/mpv.sock";
+                if (!File.Exists(ruta))
+                    return false;
+
+                using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await socket.ConnectAsync(new UnixDomainSocketEndPoint(ruta), timeout.Token);
+                using var stream = new NetworkStream(socket, ownsSocket: true);
+                using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+
+                async Task<JsonDocument> EnviarAsync(object[] argumentos, int id)
+                {
+                    string json = JsonSerializer.Serialize(new { command = argumentos, request_id = id });
+                    byte[] datos = Encoding.UTF8.GetBytes(json + "\n");
+                    await stream.WriteAsync(datos, timeout.Token);
+                    await stream.FlushAsync(timeout.Token);
+
+                    while (true)
+                    {
+                        string? linea = await reader.ReadLineAsync(timeout.Token);
+                        if (linea == null)
+                            throw new IOException("MPV cerró el socket IPC durante la recuperación HDMI.");
+
+                        using JsonDocument respuesta = JsonDocument.Parse(linea);
+                        JsonElement raiz = respuesta.RootElement;
+                        if (!raiz.TryGetProperty("request_id", out JsonElement identificador) ||
+                            !identificador.TryGetInt32(out int recibido) || recibido != id)
+                            continue;
+
+                        if (!raiz.TryGetProperty("error", out JsonElement error) ||
+                            error.GetString() != "success")
+                            throw new InvalidOperationException($"MPV rechazó IPC {id}: {linea}");
+
+                        return JsonDocument.Parse(linea);
+                    }
+                }
+
+                using JsonDocument pista = await EnviarAsync(new object[] { "get_property", "aid" }, 101);
+                JsonElement aid = pista.RootElement.GetProperty("data");
+                if (aid.ValueKind == JsonValueKind.Number && aid.TryGetInt32(out int actual) && actual > 0)
+                    return true;
+
+                using JsonDocument pistas = await EnviarAsync(new object[] { "get_property", "track-list" }, 102);
+                int? idAudio = null;
+                foreach (JsonElement elemento in pistas.RootElement.GetProperty("data").EnumerateArray())
+                {
+                    if (elemento.TryGetProperty("type", out JsonElement tipo) &&
+                        tipo.GetString() == "audio" &&
+                        elemento.TryGetProperty("id", out JsonElement id) && id.TryGetInt32(out int valor))
+                    {
+                        idAudio = valor;
+                        break;
+                    }
+                }
+
+                if (idAudio == null)
+                {
+                    _logger.LogWarning("No se encontró pista de audio para recuperar HDMI.");
+                    return false;
+                }
+
+                using JsonDocument cambio = await EnviarAsync(new object[] { "set_property", "aid", idAudio.Value }, 103);
+                using JsonDocument comprobacion = await EnviarAsync(new object[] { "get_property", "aid" }, 104);
+                JsonElement seleccionado = comprobacion.RootElement.GetProperty("data");
+                bool recuperado = seleccionado.ValueKind == JsonValueKind.Number &&
+                    seleccionado.TryGetInt32(out int idSeleccionado) && idSeleccionado == idAudio.Value;
+
+                if (recuperado)
+                    _logger.LogInformation("Pista de audio HDMI recuperada por IPC. Pista: {Pista}.", idAudio.Value);
+
+                return recuperado;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Tiempo de espera agotado durante recuperación de audio HDMI.");
+                return false;
+            }
+            catch (Exception ex) when (ex is IOException or SocketException or InvalidOperationException or JsonException)
+            {
+                _logger.LogWarning(ex, "No fue posible recuperar audio HDMI; se reintentará.");
+                return false;
+            }
+            finally
+            {
+                _processLock.Release();
+            }
+        }
+
         /// <summary>Registra la salida de diagnóstico de MPV.</summary>
         private async Task RegistrarErroresAsync(Process proceso)
         {
@@ -265,6 +443,9 @@ namespace DigitalSignage.Agent.Services
             if (_monitorTask != null)
                 await _monitorTask;
 
+            if (_hdmiMonitorTask != null)
+                await _hdmiMonitorTask;
+
             await _processLock.WaitAsync();
             try
             {
@@ -278,6 +459,7 @@ namespace DigitalSignage.Agent.Services
             }
 
             _monitorTask = null;
+            _hdmiMonitorTask = null;
             _monitorCancellation?.Dispose();
             _monitorCancellation = null;
         }
